@@ -1,0 +1,17 @@
+scheduling:
+  tasks:
+    - name: "order-cleanup"
+      fixed-rate: 5000
+      bean: "orderService"
+      method: "cleanup"
+
+    - name: "report-generator"
+      cron: "0 0 * * * *"
+      bean: "reportService"
+      method: "generate"
+
+    - name: "health-check"
+      fixed-delay: 10000
+      initial-delay: 2000
+      bean: "healthService"
+      method: "check"
