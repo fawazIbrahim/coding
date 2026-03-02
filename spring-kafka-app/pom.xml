@@ -19,6 +19,7 @@
 
     <properties>
         <java.version>17</java.version>
+        <cloudevents.version>4.0.1</cloudevents.version>
     </properties>
 
     <dependencies>
@@ -38,21 +39,21 @@
         <dependency>
             <groupId>io.cloudevents</groupId>
             <artifactId>cloudevents-core</artifactId>
-            <version>2.5.0</version>
+            <version>${cloudevents.version}</version>
         </dependency>
 
         <!-- CloudEvents Kafka binding (CloudEventSerializer / CloudEventDeserializer) -->
         <dependency>
             <groupId>io.cloudevents</groupId>
             <artifactId>cloudevents-kafka</artifactId>
-            <version>2.5.0</version>
+            <version>${cloudevents.version}</version>
         </dependency>
 
         <!-- CloudEvents Jackson / JSON data format -->
         <dependency>
             <groupId>io.cloudevents</groupId>
             <artifactId>cloudevents-json-jackson</artifactId>
-            <version>2.5.0</version>
+            <version>${cloudevents.version}</version>
         </dependency>
 
         <!-- Jackson for JSON serialization -->
