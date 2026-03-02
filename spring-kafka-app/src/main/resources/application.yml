@@ -1,0 +1,34 @@
+spring:
+  kafka:
+    bootstrap-servers: localhost:9092
+    consumer:
+      group-id: my-consumer-group
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: io.cloudevents.kafka.CloudEventDeserializer
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: io.cloudevents.kafka.CloudEventSerializer
+      acks: all
+      retries: 3
+
+kafka:
+  topic:
+    main: main-topic
+    # DeadLetterPublishingRecoverer appends ".DLT" automatically to the original topic name.
+    # Set this to match: <main-topic>.DLT
+    dlq: main-topic.DLT
+  cloudevents:
+    # CE source URI — identifies the system that produced the event
+    source: /spring-kafka-app
+    # CE type — reverse-DNS name describing the event kind
+    type: com.example.message.created
+
+server:
+  port: 8080
+
+logging:
+  level:
+    com.example.kafka: DEBUG
+    org.springframework.kafka: INFO

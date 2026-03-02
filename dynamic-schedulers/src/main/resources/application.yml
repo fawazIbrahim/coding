@@ -1,4 +1,6 @@
 scheduling:
+  virtual-threads: true   # requires Java 21+ and Spring Boot 3.2+
+  thread-pool-size: 5     # ignored when virtual-threads is true
   tasks:
     - name: "order-cleanup"
       fixed-rate: 5000
