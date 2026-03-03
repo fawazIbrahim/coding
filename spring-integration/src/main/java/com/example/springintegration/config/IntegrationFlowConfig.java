@@ -31,23 +31,37 @@ import java.util.Map;
  * <pre>
  *   MessageSenderService
  *         │
- *   MessageProcessingGateway  (sync, blocks until reply)
+ *   MessageProcessingGateway  (sync – blocks until reply)
  *         │
- *   mainInputChannel  (DirectChannel – sender thread executes the whole flow)
+ *   mainInputChannel  (DirectChannel – sender thread runs the whole flow)
  *         │
- *      [Router] ── type ──► type1SubFlow ─┐
- *                       ├─► type2SubFlow ─┤─► ProcessingResult (reply)
- *                       ├─► type3SubFlow ─┘
- *                       └─► unknown  ──► ErrorHandlerService
+ *      [Router] ──────────────────────────────────┐
+ *          │ type1           │ type2   │ type3     │ unknown
+ *          ▼                 ▼         ▼           ▼
+ *   type1Channel      type2Channel  type3Channel  unknownChannel
+ *          │                 │         │
+ *   [type1Flow]       [type2Flow]  [type3Flow]
+ *    transform x2      transform x2  transform x1
+ *          │                 │         │
+ *          └────────────────►│◄────────┘
+ *                            ▼
+ *                   ProcessingResult (reply via replyChannel header)
  * </pre>
  *
- * <h2>Retry strategy (type1 & type3 microservice calls)</h2>
+ * <h2>Why transform() instead of handle()</h2>
+ * {@code handle()} wraps a {@code MessageHandler} (void) and discards the return
+ * value. {@code transform()} wraps a {@code GenericTransformer<S,T>} whose return
+ * value IS the next message payload – this is the correct primitive for any step
+ * that must produce a result.
+ *
+ * <h2>Retry strategy (type1 and type3 microservice calls)</h2>
  * <ul>
- *   <li>{@link RetryableServiceException} (5xx / 429) → retry up to 3 times
- *       (4 total attempts), then recovery via {@link ErrorHandlerService}</li>
- *   <li>{@link com.example.springintegration.exception.NonRetryableServiceException}
- *       → skip retries immediately, recovery via {@link ErrorHandlerService}</li>
+ *   <li>{@link RetryableServiceException} (5xx / 429): retried up to 3 times
+ *       (4 total attempts). After exhaustion → recovery via {@link ErrorHandlerService}.</li>
+ *   <li>Any other exception: not retried – recovery fires immediately.</li>
  * </ul>
+ * Recovery always returns {@link ProcessingResult#failure}, so every step downstream
+ * operates on a uniform {@code ProcessingResult} type.
  */
 @Configuration
 @EnableIntegration
@@ -56,7 +70,7 @@ public class IntegrationFlowConfig {
 
     private static final Logger log = LoggerFactory.getLogger(IntegrationFlowConfig.class);
 
-    /** Total attempts = 1 initial + 3 retries, as required by the spec. */
+    /** 1 initial attempt + 3 retries = 4 total, as required by the spec. */
     private static final int MAX_ATTEMPTS = 4;
 
     private final ErrorHandlerService errorHandlerService;
@@ -79,26 +93,47 @@ public class IntegrationFlowConfig {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Channel
+    // Channels
     // ─────────────────────────────────────────────────────────────────────────
 
     /**
-     * The single DirectChannel through which all messages are dispatched.
-     * DirectChannel is synchronous: the calling thread executes the handler,
-     * so {@code gateway.process()} blocks until the full flow completes.
+     * The single DirectChannel that the gateway writes to.
+     * DirectChannel dispatches synchronously on the sender's thread, so
+     * {@code gateway.process()} blocks until the entire flow finishes.
      */
     @Bean
     public DirectChannel mainInputChannel() {
         return new DirectChannel();
     }
 
+    @Bean
+    public DirectChannel type1Channel() {
+        return new DirectChannel();
+    }
+
+    @Bean
+    public DirectChannel type2Channel() {
+        return new DirectChannel();
+    }
+
+    @Bean
+    public DirectChannel type3Channel() {
+        return new DirectChannel();
+    }
+
+    @Bean
+    public DirectChannel unknownChannel() {
+        return new DirectChannel();
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
-    // Main flow
+    // Main flow – router only
     // ─────────────────────────────────────────────────────────────────────────
 
     /**
-     * Receives every message from {@code mainInputChannel} and routes it to
-     * the correct sub-flow based on the {@code type} field.
+     * Reads from {@code mainInputChannel} and routes to the typed channel.
+     * The {@code replyChannel} header set by the gateway is preserved through
+     * the routing so each type flow can send its result directly back to the caller.
      */
     @Bean
     public IntegrationFlow mainFlow() {
@@ -107,136 +142,166 @@ public class IntegrationFlowConfig {
             .<IntegrationMessage, String>route(
                 msg -> resolveRoute(msg),
                 mapping -> mapping
-                    .subFlowMapping("type1", f -> type1SubFlow(f))
-                    .subFlowMapping("type2", f -> type2SubFlow(f))
-                    .subFlowMapping("type3", f -> type3SubFlow(f))
-                    // Unknown / null type → immediate error
-                    .subFlowMapping("unknown", f -> f
-                        .<IntegrationMessage, ProcessingResult>handle(
-                            (payload, headers) -> errorHandlerService.handle(
-                                new IllegalArgumentException(
-                                    "Unknown or missing message type: " + payload.getType()))
-                        )
-                    )
+                    .channelMapping("type1", "type1Channel")
+                    .channelMapping("type2", "type2Channel")
+                    .channelMapping("type3", "type3Channel")
+                    .channelMapping("unknown", "unknownChannel")
             )
             .get();
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Type1 sub-flow
+    // Type1 flow
     // ─────────────────────────────────────────────────────────────────────────
 
     /**
      * Type1 processing:
      * <ol>
-     *   <li>Call the remote microservice with retry (5xx/429 → retry, other → direct recovery)</li>
-     *   <li>On microservice success → pass result to {@link Type1PostProcessingService}</li>
-     *   <li>On post-processing exception → {@link ErrorHandlerService}</li>
+     *   <li>Call the remote microservice.
+     *       Wraps success in {@link ProcessingResult#success}.
+     *       On 5xx/429 → retried up to 3 times; on other error → recovery fires
+     *       immediately. Both paths produce {@link ProcessingResult#failure}.</li>
+     *   <li>If step 1 failed, short-circuit. Otherwise call
+     *       {@link Type1PostProcessingService}; on exception → error handler.</li>
      * </ol>
      */
-    private IntegrationFlow type1SubFlow(IntegrationFlow flow) {
-        return flow
-            // Step 1 – microservice call with retry advice
-            .<IntegrationMessage, Object>handle(
-                (payload, headers) -> {
-                    log.debug("Type1: calling microservice for payload={}", payload.getPayload());
-                    return microserviceClient.exchange(payload);
+    @Bean
+    public IntegrationFlow type1Flow() {
+        return IntegrationFlow
+            .from(type1Channel())
+
+            // Step 1 – microservice call with retry.
+            // transform() return value becomes the next message payload.
+            // Recovery callback also returns ProcessingResult so the type is uniform.
+            .transform(
+                (IntegrationMessage payload) -> {
+                    log.debug("Type1: calling microservice, payload={}", payload.getPayload());
+                    Object result = microserviceClient.exchange(payload);
+                    return ProcessingResult.success(result);
                 },
                 spec -> spec.advice(createMicroserviceRetryAdvice())
             )
-            // Step 2 – post-process the microservice result
-            // If step 1 recovery fired, the payload is already a ProcessingResult – pass it through.
-            .<Object, ProcessingResult>handle(
-                (payload, headers) -> {
-                    if (payload instanceof ProcessingResult alreadyHandled) {
-                        return alreadyHandled;
+
+            // Step 2 – post-process.
+            // Input is always ProcessingResult (either from step 1 success or recovery).
+            .transform(
+                (ProcessingResult result) -> {
+                    if (!result.isSuccess()) {
+                        return result; // already a handled failure – pass through
                     }
-                    log.debug("Type1: post-processing microservice result: {}", payload);
+                    log.debug("Type1: post-processing result={}", result.getData());
                     try {
-                        return type1PostProcessingService.process(payload);
+                        return type1PostProcessingService.process(result.getData());
                     } catch (Exception ex) {
-                        log.warn("Type1: post-processing failed, delegating to error handler", ex);
+                        log.warn("Type1: post-processing failed", ex);
                         return errorHandlerService.handle(ex);
                     }
                 }
-            );
+            )
+
+            .get();
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Type2 sub-flow
+    // Type2 flow
     // ─────────────────────────────────────────────────────────────────────────
 
     /**
      * Type2 processing:
      * <ol>
-     *   <li>Map the message to a {@link MappedObject} via {@link Type2MappingService}</li>
-     *   <li>On mapping exception → {@link ErrorHandlerService}</li>
-     *   <li>On mapping success → publish via {@link KafkaProducerPort#sendAndWait}</li>
-     *   <li>On publish failure (false or exception) → {@link ErrorHandlerService}</li>
-     *   <li>On publish success → return the {@link MappedObject} as the final result</li>
+     *   <li>Map the message to a {@link MappedObject} via
+     *       {@link Type2MappingService}. On exception → error handler.</li>
+     *   <li>If step 1 failed, short-circuit. Otherwise send to Kafka via
+     *       {@link KafkaProducerPort#sendAndWait}; on {@code false} or exception
+     *       → error handler. On success → return the {@link MappedObject}.</li>
      * </ol>
      */
-    private IntegrationFlow type2SubFlow(IntegrationFlow flow) {
-        return flow
-            // Step 1 – map message to MappedObject
-            .<IntegrationMessage, Object>handle(
-                (payload, headers) -> {
-                    log.debug("Type2: mapping message: {}", payload.getPayload());
+    @Bean
+    public IntegrationFlow type2Flow() {
+        return IntegrationFlow
+            .from(type2Channel())
+
+            // Step 1 – map to MappedObject, wrap in ProcessingResult.
+            .transform(
+                (IntegrationMessage payload) -> {
+                    log.debug("Type2: mapping payload={}", payload.getPayload());
                     try {
-                        return type2MappingService.map(payload);
+                        MappedObject mapped = type2MappingService.map(payload);
+                        return ProcessingResult.success(mapped);
                     } catch (Exception ex) {
-                        log.warn("Type2: mapping failed, delegating to error handler", ex);
+                        log.warn("Type2: mapping failed", ex);
                         return errorHandlerService.handle(ex);
                     }
                 }
             )
-            // Step 2 – send to Kafka
-            // If step 1 failed, the payload is already a ProcessingResult – pass it through.
-            .<Object, ProcessingResult>handle(
-                (payload, headers) -> {
-                    if (payload instanceof ProcessingResult alreadyHandled) {
-                        return alreadyHandled;
+
+            // Step 2 – publish to Kafka.
+            .transform(
+                (ProcessingResult result) -> {
+                    if (!result.isSuccess()) {
+                        return result; // already a handled failure – pass through
                     }
-                    MappedObject mappedObject = (MappedObject) payload;
-                    log.debug("Type2: sending to Kafka: {}", mappedObject.getId());
+                    MappedObject mappedObject = (MappedObject) result.getData();
+                    log.debug("Type2: sending to Kafka id={}", mappedObject.getId());
                     try {
                         boolean sent = kafkaProducerPort.sendAndWait(mappedObject);
                         if (!sent) {
-                            log.warn("Type2: Kafka producer returned false, delegating to error handler");
+                            log.warn("Type2: Kafka producer returned false");
                             return errorHandlerService.handle(
                                 new RuntimeException("Kafka producer failed to acknowledge message"));
                         }
                         return ProcessingResult.success(mappedObject);
                     } catch (Exception ex) {
-                        log.warn("Type2: Kafka producer threw exception, delegating to error handler", ex);
+                        log.warn("Type2: Kafka producer threw exception", ex);
                         return errorHandlerService.handle(ex);
                     }
                 }
-            );
+            )
+
+            .get();
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Type3 sub-flow
+    // Type3 flow
     // ─────────────────────────────────────────────────────────────────────────
 
     /**
      * Type3 processing:
      * <ol>
-     *   <li>Call the remote microservice with the same retry logic as Type1</li>
-     *   <li>On success → microservice result is the final result</li>
-     *   <li>On failure (retries exhausted or non-retryable) → {@link ErrorHandlerService}</li>
+     *   <li>Call the remote microservice with the same retry policy as Type1.</li>
+     *   <li>The microservice response is the final result.</li>
      * </ol>
      */
-    private IntegrationFlow type3SubFlow(IntegrationFlow flow) {
-        return flow
-            .<IntegrationMessage, ProcessingResult>handle(
-                (payload, headers) -> {
-                    log.debug("Type3: calling microservice for payload={}", payload.getPayload());
+    @Bean
+    public IntegrationFlow type3Flow() {
+        return IntegrationFlow
+            .from(type3Channel())
+
+            .transform(
+                (IntegrationMessage payload) -> {
+                    log.debug("Type3: calling microservice, payload={}", payload.getPayload());
                     Object result = microserviceClient.exchange(payload);
                     return ProcessingResult.success(result);
                 },
                 spec -> spec.advice(createMicroserviceRetryAdvice())
-            );
+            )
+
+            .get();
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Unknown-type flow
+    // ─────────────────────────────────────────────────────────────────────────
+
+    @Bean
+    public IntegrationFlow unknownTypeFlow() {
+        return IntegrationFlow
+            .from(unknownChannel())
+            .transform(
+                (IntegrationMessage payload) -> errorHandlerService.handle(
+                    new IllegalArgumentException("Unknown or null message type: " + payload.getType()))
+            )
+            .get();
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -244,24 +309,30 @@ public class IntegrationFlowConfig {
     // ─────────────────────────────────────────────────────────────────────────
 
     /**
-     * Creates a {@link RequestHandlerRetryAdvice} configured as follows:
-     * <ul>
-     *   <li>{@link RetryableServiceException} → retried up to {@value #MAX_ATTEMPTS} total
-     *       attempts (1 initial + 3 retries)</li>
-     *   <li>Any other exception → not retried (treated as immediately exhausted)</li>
-     *   <li>After exhaustion (both cases) → recovery via {@link ErrorHandlerService}</li>
-     * </ul>
+     * Builds a fresh {@link RequestHandlerRetryAdvice} for each call site so that
+     * type1 and type3 endpoints have independent retry state.
      *
-     * <p>A new advice instance is created per call so that each endpoint has an
-     * independent configuration.</p>
+     * <p>Works with both {@code transform()} and {@code handle()} endpoints because
+     * {@link RequestHandlerRetryAdvice} targets {@code AbstractReplyProducingMessageHandler},
+     * which is the base class for both {@code MessageTransformingHandler} and
+     * {@code ServiceActivatingHandler}.</p>
+     *
+     * <p>Spring Retry behaviour:</p>
+     * <ul>
+     *   <li>{@link RetryableServiceException}: retried up to {@value #MAX_ATTEMPTS} times.
+     *       After exhaustion, the recovery callback is invoked.</li>
+     *   <li>Any other exception: {@code defaultValue=false} → policy declares it
+     *       non-retryable, which triggers {@code TerminatedRetryException} internally,
+     *       causing Spring Retry to call the recovery callback immediately.</li>
+     * </ul>
+     * Either way the recovery callback returns {@link ProcessingResult#failure} so the
+     * downstream steps always receive a uniform {@code ProcessingResult}.
      */
     private RequestHandlerRetryAdvice createMicroserviceRetryAdvice() {
         Map<Class<? extends Throwable>, Boolean> retryableExceptions = new HashMap<>();
-        // Only RetryableServiceException triggers retries; everything else is non-retryable.
         retryableExceptions.put(RetryableServiceException.class, true);
+        // Everything else → defaultValue=false → non-retryable → recovery fires immediately
 
-        // traverseCauses=true  → inspect the cause chain for RetryableServiceException
-        // defaultValue=false   → any exception NOT in the map is non-retryable
         SimpleRetryPolicy retryPolicy =
             new SimpleRetryPolicy(MAX_ATTEMPTS, retryableExceptions, true, false);
 
@@ -270,10 +341,9 @@ public class IntegrationFlowConfig {
 
         RequestHandlerRetryAdvice advice = new RequestHandlerRetryAdvice();
         advice.setRetryTemplate(retryTemplate);
-        // Recovery is called for both retries-exhausted AND non-retryable exceptions.
         advice.setRecoveryCallback(context -> {
             Throwable lastError = context.getLastThrowable();
-            log.warn("Microservice call failed (attempt {}), delegating to error handler: {}",
+            log.warn("Microservice call failed after {} attempt(s): {}",
                 context.getRetryCount(), lastError.getMessage());
             return errorHandlerService.handle(lastError);
         });
@@ -285,16 +355,12 @@ public class IntegrationFlowConfig {
     // Helper
     // ─────────────────────────────────────────────────────────────────────────
 
-    /**
-     * Returns the routing key for the given message.
-     * Maps {@code null} or unrecognised type values to {@code "unknown"}.
-     */
     private String resolveRoute(IntegrationMessage msg) {
         String type = msg.getType();
         if ("type1".equals(type) || "type2".equals(type) || "type3".equals(type)) {
             return type;
         }
-        log.warn("Unrecognised message type '{}', routing to error handler", type);
+        log.warn("Unrecognised message type '{}' – routing to error handler", type);
         return "unknown";
     }
 }
