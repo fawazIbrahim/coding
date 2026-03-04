@@ -4,6 +4,7 @@ import com.example.springintegration.domain.IntegrationMessage;
 import com.example.springintegration.domain.MappedObject;
 import com.example.springintegration.domain.ProcessingResult;
 import com.example.springintegration.exception.RetryableServiceException;
+import com.example.springintegration.gateway.MessageProcessingGateway;
 import com.example.springintegration.service.ErrorHandlerService;
 import com.example.springintegration.service.KafkaProducerPort;
 import com.example.springintegration.service.MicroserviceClient;
@@ -13,10 +14,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.integration.annotation.IntegrationComponentScan;
 import org.springframework.integration.channel.DirectChannel;
 import org.springframework.integration.config.EnableIntegration;
 import org.springframework.integration.dsl.IntegrationFlow;
+import org.springframework.integration.gateway.GatewayProxyFactoryBean;
 import org.springframework.integration.handler.advice.RequestHandlerRetryAdvice;
 import org.springframework.retry.policy.SimpleRetryPolicy;
 import org.springframework.retry.support.RetryTemplate;
@@ -65,7 +66,6 @@ import java.util.Map;
  */
 @Configuration
 @EnableIntegration
-@IntegrationComponentScan(basePackages = "com.example.springintegration")
 public class IntegrationFlowConfig {
 
     private static final Logger log = LoggerFactory.getLogger(IntegrationFlowConfig.class);
@@ -104,6 +104,26 @@ public class IntegrationFlowConfig {
     @Bean
     public DirectChannel mainInputChannel() {
         return new DirectChannel();
+    }
+
+    /**
+     * Registers the {@link MessageProcessingGateway} proxy explicitly.
+     *
+     * <p>Using {@link GatewayProxyFactoryBean} directly — instead of
+     * {@code @MessagingGateway} + {@code @IntegrationComponentScan} — makes the
+     * gateway a first-class {@code @Bean}: it is visible in the context, can be
+     * injected by type, and does not depend on annotation scanning order.</p>
+     *
+     * <p>{@code GatewayProxyFactoryBean} implements {@code FactoryBean<MessageProcessingGateway>},
+     * so Spring exposes the proxy (not the factory) when the bean is autowired.</p>
+     */
+    @Bean
+    public GatewayProxyFactoryBean<MessageProcessingGateway> messageProcessingGateway() {
+        GatewayProxyFactoryBean<MessageProcessingGateway> factory =
+            new GatewayProxyFactoryBean<>(MessageProcessingGateway.class);
+        // Resolved by name from the application context at startup.
+        factory.setDefaultRequestChannelName("mainInputChannel");
+        return factory;
     }
 
     @Bean

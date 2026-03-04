@@ -2,8 +2,6 @@ package com.example.springintegration.gateway;
 
 import com.example.springintegration.domain.IntegrationMessage;
 import com.example.springintegration.domain.ProcessingResult;
-import org.springframework.integration.annotation.MessagingGateway;
-
 /**
  * Spring Integration messaging gateway.
  *
@@ -11,10 +9,11 @@ import org.springframework.integration.annotation.MessagingGateway;
  * The call blocks until the entire processing pipeline completes and always
  * returns a {@link ProcessingResult} – success or handled failure.</p>
  *
- * <p>The underlying channel is a {@link org.springframework.integration.channel.DirectChannel},
- * which means the sender thread is the one executing the entire flow.</p>
+ * <p>The proxy for this interface is registered explicitly via
+ * {@link org.springframework.integration.gateway.GatewayProxyFactoryBean} in
+ * {@link com.example.springintegration.config.IntegrationFlowConfig} –
+ * no annotation scanning is required.</p>
  */
-@MessagingGateway(defaultRequestChannel = "mainInputChannel")
 public interface MessageProcessingGateway {
 
     /**
