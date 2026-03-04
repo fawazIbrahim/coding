@@ -4,7 +4,6 @@ import com.example.springintegration.domain.IntegrationMessage;
 import com.example.springintegration.domain.MappedObject;
 import com.example.springintegration.domain.ProcessingResult;
 import com.example.springintegration.exception.RetryableServiceException;
-import com.example.springintegration.gateway.MessageProcessingGateway;
 import com.example.springintegration.service.ErrorHandlerService;
 import com.example.springintegration.service.KafkaProducerPort;
 import com.example.springintegration.service.MicroserviceClient;
@@ -17,7 +16,6 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.integration.channel.DirectChannel;
 import org.springframework.integration.config.EnableIntegration;
 import org.springframework.integration.dsl.IntegrationFlow;
-import org.springframework.integration.gateway.GatewayProxyFactoryBean;
 import org.springframework.integration.handler.advice.RequestHandlerRetryAdvice;
 import org.springframework.retry.policy.SimpleRetryPolicy;
 import org.springframework.retry.support.RetryTemplate;
@@ -30,9 +28,7 @@ import java.util.Map;
  *
  * <h2>Architecture</h2>
  * <pre>
- *   MessageSenderService
- *         │
- *   MessageProcessingGateway  (sync – blocks until reply)
+ *   MessageSenderService  (MessagingTemplate.sendAndReceive – blocks until reply)
  *         │
  *   mainInputChannel  (DirectChannel – sender thread runs the whole flow)
  *         │
@@ -97,33 +93,14 @@ public class IntegrationFlowConfig {
     // ─────────────────────────────────────────────────────────────────────────
 
     /**
-     * The single DirectChannel that the gateway writes to.
-     * DirectChannel dispatches synchronously on the sender's thread, so
-     * {@code gateway.process()} blocks until the entire flow finishes.
+     * The single DirectChannel that {@link com.example.springintegration.service.MessageSenderService}
+     * writes to via {@link org.springframework.integration.core.MessagingTemplate#sendAndReceive}.
+     * DirectChannel is synchronous: the calling thread executes the entire flow and
+     * blocks until the last transformer sends a reply to the temporary reply channel.
      */
     @Bean
     public DirectChannel mainInputChannel() {
         return new DirectChannel();
-    }
-
-    /**
-     * Registers the {@link MessageProcessingGateway} proxy explicitly.
-     *
-     * <p>Using {@link GatewayProxyFactoryBean} directly — instead of
-     * {@code @MessagingGateway} + {@code @IntegrationComponentScan} — makes the
-     * gateway a first-class {@code @Bean}: it is visible in the context, can be
-     * injected by type, and does not depend on annotation scanning order.</p>
-     *
-     * <p>{@code GatewayProxyFactoryBean} implements {@code FactoryBean<MessageProcessingGateway>},
-     * so Spring exposes the proxy (not the factory) when the bean is autowired.</p>
-     */
-    @Bean
-    public GatewayProxyFactoryBean<MessageProcessingGateway> messageProcessingGateway() {
-        GatewayProxyFactoryBean<MessageProcessingGateway> factory =
-            new GatewayProxyFactoryBean<>(MessageProcessingGateway.class);
-        // Resolved by name from the application context at startup.
-        factory.setDefaultRequestChannelName("mainInputChannel");
-        return factory;
     }
 
     @Bean
