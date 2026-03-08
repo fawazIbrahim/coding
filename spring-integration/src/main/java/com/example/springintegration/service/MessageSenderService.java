@@ -11,13 +11,20 @@ import org.springframework.messaging.support.MessageBuilder;
 import org.springframework.stereotype.Service;
 
 /**
- * Application-level entry point for sending messages into the integration pipeline.
+ * Entry point for submitting messages into the integration pipeline.
  *
- * <p>Uses Spring Integration's {@link MessagingTemplate#sendAndReceive} to dispatch
- * the message on the {@code mainInputChannel} and block until the flow returns a
- * reply. The template internally attaches a temporary {@code DirectChannel} as the
- * {@code replyChannel} header, which the last transformer in each type-flow uses to
- * route its result back to the caller — all on the same thread.</p>
+ * <h2>Exception strategy</h2>
+ * Every transform step in every flow is written as pure business logic that
+ * throws on failure. Because all channels are {@link DirectChannel} (synchronous),
+ * an exception thrown in any step unwinds the call stack immediately — no further
+ * steps are invoked — and surfaces here as an exception from
+ * {@link MessagingTemplate#sendAndReceive}.
+ *
+ * <p>This single catch converts <em>any</em> flow-level exception into a
+ * {@link ProcessingResult#failure}, making it the sole error-handling boundary.
+ * The alternative — catching inside every lambda and returning a failure — forces
+ * all subsequent steps to execute (just to pass the failure through), which is
+ * wasteful in long chains.</p>
  */
 @Service
 public class MessageSenderService {
@@ -36,23 +43,41 @@ public class MessageSenderService {
      * Sends {@code message} through the integration channel and blocks until
      * the flow returns a {@link ProcessingResult}.
      *
-     * @param message must have a non-null {@code type} field ("type1", "type2", or "type3")
-     * @return the result of the processing pipeline; never {@code null}
+     * @param message must have a non-null {@code type} field
+     * @return the result of the pipeline; never {@code null}
      */
     public ProcessingResult send(IntegrationMessage message) {
         log.info("Sending message: {}", message);
-
         Message<IntegrationMessage> request = MessageBuilder.withPayload(message).build();
-        Message<?> reply = messagingTemplate.sendAndReceive(mainInputChannel, request);
-
-        if (reply == null) {
-            log.error("No reply received for message type '{}' (timeout or channel misconfiguration)",
-                message.getType());
-            return ProcessingResult.failure("No reply received");
+        try {
+            Message<?> reply = messagingTemplate.sendAndReceive(mainInputChannel, request);
+            if (reply == null) {
+                return ProcessingResult.failure("No reply received (timeout or misconfiguration)");
+            }
+            ProcessingResult result = (ProcessingResult) reply.getPayload();
+            log.info("Processing completed – type='{}' result={}", message.getType(), result);
+            return result;
+        } catch (Exception ex) {
+            // Any exception thrown by any step in the flow arrives here.
+            // We unwrap Spring Integration / Spring Retry wrapper exceptions to
+            // reach the root cause before delegating to the error handler.
+            Throwable cause = unwrapCause(ex);
+            log.error("Flow failed for type='{}': {}", message.getType(), cause.getMessage(), cause);
+            return ProcessingResult.failure(cause.getMessage());
         }
+    }
 
-        ProcessingResult result = (ProcessingResult) reply.getPayload();
-        log.info("Processing completed – type='{}' result={}", message.getType(), result);
-        return result;
+    /**
+     * Walks the cause chain to strip Spring Integration wrapper exceptions
+     * (e.g. {@code MessageHandlingException}, {@code MessageDeliveryException})
+     * and Spring Retry's {@code ExhaustedRetryException}, exposing the original
+     * business-level exception for logging and error-handler inspection.
+     */
+    private static Throwable unwrapCause(Throwable ex) {
+        Throwable cause = ex;
+        while (cause.getCause() != null && cause.getCause() != cause) {
+            cause = cause.getCause();
+        }
+        return cause;
     }
 }
