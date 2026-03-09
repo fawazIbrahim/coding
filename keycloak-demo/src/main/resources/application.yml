@@ -1,0 +1,26 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: keycloak-demo
+
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          # Keycloak realm issuer URI — Spring fetches JWKS automatically from /.well-known/openid-configuration
+          issuer-uri: http://localhost:8180/realms/company-realm
+          # Alternatively, set jwk-set-uri directly:
+          # jwk-set-uri: http://localhost:8180/realms/company-realm/protocol/openid-connect/certs
+
+# Keycloak custom properties (used by KeycloakJwtConverter)
+keycloak:
+  realm: company-realm
+  # Client ID whose resource_access roles to also extract
+  client-id: company-api
+
+logging:
+  level:
+    org.springframework.security: DEBUG
+    com.example.keycloakdemo: DEBUG

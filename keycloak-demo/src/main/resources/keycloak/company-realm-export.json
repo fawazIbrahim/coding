@@ -1,0 +1,268 @@
+{
+  "realm": "company-realm",
+  "enabled": true,
+  "displayName": "Company Portal",
+  "displayNameHtml": "<b>Company Portal</b>",
+  "sslRequired": "external",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": true,
+  "editUsernameAllowed": false,
+  "bruteForceProtected": true,
+
+  "accessTokenLifespan": 300,
+  "accessTokenLifespanForImplicitFlow": 900,
+  "ssoSessionMaxLifespan": 36000,
+  "offlineSessionMaxLifespan": 5184000,
+
+  "roles": {
+    "realm": [
+      {
+        "name": "app-admin",
+        "description": "Full administrative access to the application",
+        "composite": false,
+        "clientRole": false
+      },
+      {
+        "name": "app-manager",
+        "description": "Can manage reports and view team data",
+        "composite": false,
+        "clientRole": false
+      },
+      {
+        "name": "app-user",
+        "description": "Standard user — can view own profile and submit data",
+        "composite": false,
+        "clientRole": false
+      }
+    ],
+    "client": {
+      "company-api": [
+        {
+          "name": "report:read",
+          "description": "Can read reports — granted to users, managers, and admins",
+          "composite": false,
+          "clientRole": true
+        },
+        {
+          "name": "report:approve",
+          "description": "Can approve or reject reports — NOT granted to plain users",
+          "composite": false,
+          "clientRole": true
+        },
+        {
+          "name": "user:create",
+          "description": "Can create new user accounts — admin only",
+          "composite": false,
+          "clientRole": true
+        },
+        {
+          "name": "user:delete",
+          "description": "Can delete user accounts — admin only",
+          "composite": false,
+          "clientRole": true
+        },
+        {
+          "name": "admin:realm-view",
+          "description": "Can view realm configuration — admin only",
+          "composite": false,
+          "clientRole": true
+        }
+      ]
+    }
+  },
+
+  "groups": [
+    {
+      "name": "admins",
+      "path": "/admins",
+      "realmRoles": ["app-admin"],
+      "clientRoles": {
+        "company-api": ["report:read", "report:approve", "user:create", "user:delete", "admin:realm-view"]
+      },
+      "subGroups": []
+    },
+    {
+      "name": "managers",
+      "path": "/managers",
+      "realmRoles": ["app-manager"],
+      "clientRoles": {
+        "company-api": ["report:read", "report:approve"]
+      },
+      "subGroups": []
+    },
+    {
+      "name": "users",
+      "path": "/users",
+      "realmRoles": ["app-user"],
+      "clientRoles": {
+        "company-api": ["report:read"]
+      },
+      "subGroups": []
+    }
+  ],
+
+  "clients": [
+    {
+      "clientId": "company-api",
+      "name": "Company API (Resource Server)",
+      "description": "Backend REST API — validates Bearer tokens from company-frontend",
+      "enabled": true,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "company-api-secret",
+      "bearerOnly": true,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "publicClient": false,
+      "protocol": "openid-connect",
+      "attributes": {
+        "access.token.lifespan": "300"
+      }
+    },
+    {
+      "clientId": "company-frontend",
+      "name": "Company Frontend (Public Client)",
+      "description": "Public client used by the SPA or for testing with password grant",
+      "enabled": true,
+      "clientAuthenticatorType": "client-secret",
+      "bearerOnly": false,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": false,
+      "publicClient": true,
+      "protocol": "openid-connect",
+      "redirectUris": [
+        "http://localhost:3000/*",
+        "http://localhost:8080/*"
+      ],
+      "webOrigins": [
+        "http://localhost:3000",
+        "http://localhost:8080"
+      ],
+      "defaultClientScopes": [
+        "openid",
+        "profile",
+        "email",
+        "roles"
+      ]
+    }
+  ],
+
+  "users": [
+    {
+      "username": "alice",
+      "email": "alice@company.com",
+      "firstName": "Alice",
+      "lastName": "Admin",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "alice123",
+          "temporary": false
+        }
+      ],
+      "realmRoles": ["app-admin"],
+      "groups": ["/admins"],
+      "attributes": {
+        "department": ["Engineering"],
+        "employee-id": ["EMP-001"]
+      }
+    },
+    {
+      "username": "bob",
+      "email": "bob@company.com",
+      "firstName": "Bob",
+      "lastName": "Manager",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "bob123",
+          "temporary": false
+        }
+      ],
+      "realmRoles": ["app-manager"],
+      "groups": ["/managers"],
+      "attributes": {
+        "department": ["Sales"],
+        "employee-id": ["EMP-002"]
+      }
+    },
+    {
+      "username": "carol",
+      "email": "carol@company.com",
+      "firstName": "Carol",
+      "lastName": "User",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "carol123",
+          "temporary": false
+        }
+      ],
+      "realmRoles": ["app-user"],
+      "groups": ["/users"],
+      "attributes": {
+        "department": ["Sales"],
+        "employee-id": ["EMP-003"]
+      }
+    }
+  ],
+
+  "clientScopes": [
+    {
+      "name": "roles",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "false",
+        "display.on.consent.screen": "true"
+      },
+      "protocolMappers": [
+        {
+          "name": "realm roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "consentRequired": false,
+          "config": {
+            "multivalued": "true",
+            "user.attribute": "foo",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "claim.name": "realm_access.roles",
+            "jsonType.label": "String"
+          }
+        },
+        {
+          "name": "client roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-client-role-mapper",
+          "consentRequired": false,
+          "config": {
+            "multivalued": "true",
+            "user.attribute": "foo",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "claim.name": "resource_access.${client_id}.roles",
+            "jsonType.label": "String"
+          }
+        }
+      ]
+    }
+  ],
+
+  "defaultDefaultClientScopes": [
+    "openid",
+    "profile",
+    "email",
+    "roles"
+  ]
+}
