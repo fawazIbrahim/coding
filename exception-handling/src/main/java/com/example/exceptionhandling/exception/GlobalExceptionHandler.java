@@ -25,7 +25,7 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
 
     @ExceptionHandler(Exception.class)
     ResponseEntity<ApiError> handleAll(Exception ex, HttpServletRequest req) {
-        return build(HttpStatus.INTERNAL_SERVER_ERROR, req.getRequestURI(), ex.getMessage());
+        return build(HttpStatus.INTERNAL_SERVER_ERROR, req.getRequestURI(), "An internal server error occurred");
     }
 
     @Override
@@ -51,8 +51,12 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
             HttpStatusCode status,
             WebRequest request) {
 
+        String message = status.is5xxServerError()
+                ? "An internal server error occurred"
+                : ex.getMessage();
+
         return ResponseEntity.status(status).headers(headers)
-                .body(ApiError.of(status.value(), extractPath(request), ex.getMessage()));
+                .body(ApiError.of(status.value(), extractPath(request), message));
     }
 
     private ResponseEntity<ApiError> build(HttpStatus status, String path, String message) {

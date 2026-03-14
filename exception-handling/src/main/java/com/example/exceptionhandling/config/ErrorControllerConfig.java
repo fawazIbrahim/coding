@@ -42,9 +42,9 @@ public class ErrorControllerConfig implements ErrorController {
         HttpStatus status = HttpStatus.resolve(statusCode);
         if (status == null) status = HttpStatus.INTERNAL_SERVER_ERROR;
 
-        String message = throwable != null
-                ? throwable.getMessage()
-                : (String) attrs.getOrDefault("error", status.getReasonPhrase());
+        String message = status.is5xxServerError()
+                ? "An internal server error occurred"
+                : (throwable != null ? throwable.getMessage() : (String) attrs.getOrDefault("error", status.getReasonPhrase()));
 
         return ResponseEntity.status(status)
                 .body(ApiError.of(status.value(), (String) attrs.get("path"), message));
